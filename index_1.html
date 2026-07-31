@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Finanzas 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  body { margin: 0; }
+  * { -webkit-tap-highlight-color: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ————— Config —————
+const SHEET_ID = "1r2v4JlzQVj5s013rT-Gbi2b5M4SXPhbTPIpi4vWkuao";
+const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+const GASTO_TABS = ["➕Gasto", "➕ Gasto", "Gasto", "Gastos"];
+const INGRESO_TABS = ["➕Ingreso", "➕ Ingreso", "Ingreso", "Ingresos"];
+const EXTRA_CATS = ["compras especiales", "vacaciones"];
+
+const INK = "#17211C", MUTED = "#71796F", FAINT = "#A7ADA3";
+const PAPER = "#F6F6F2", CARD = "#FFFFFF", LINE = "#E5E6DF";
+const GREEN = "#0E7B5B", RED = "#B4432B", AMBER = "#8A6D1F";
+
+const MESES = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+const MESES_FULL = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const MONTH_TOKENS = { ene:0, feb:1, mar:2, abr:3, may:4, jun:5, jul:6, ago:7, sep:8, sept:8, set:8, oct:9, nov:10, dic:11 };
+
+// ————— Parsing —————
+function parseFecha(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().toLowerCase();
+  const m = s.match(/^(\d{1,2})[-\/. ]+([a-záéíóúñ]+|\d{1,2})[-\/. ]+(\d{2,4})/);
+  if (!m) return null;
+  const d = parseInt(m[1], 10);
+  let mo;
+  if (/^\d+$/.test(m[2])) mo = parseInt(m[2], 10) - 1;
+  else {
+    const tok = m[2].replace(/\./g, "").slice(0, 4);
+    mo = MONTH_TOKENS[tok] !== undefined ? MONTH_TOKENS[tok] : MONTH_TOKENS[tok.slice(0, 3)];
+  }
+  if (mo == null || mo < 0 || mo > 11 || d < 1 || d > 31) return null;
+  return { d, m: mo };
+}
+
+function parseImporte(raw) {
+  if (raw == null) return 0;
+  let s = String(raw).replace(/[^\d,.\-]/g, "");
+  if (!s) return 0;
+  s = s.replace(/\./g, "").replace(",", ".");
+  const v = parseFloat(s);
+  return isNaN(v) ? 0 : v;
+}
+
+const norm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+function pickCol(headers, candidates) {
+  for (const c of candidates) {
+    const i = headers.findIndex((h) => norm(h).includes(c));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+function parseGastosCsv(text) {
+  const { data } = Papa.parse(text.trim(), { skipEmptyLines: true });
+  if (!data.length) return null;
+  const headers = data[0].map(norm);
+  const iF = pickCol(headers, ["fecha"]);
+  const iC = pickCol(headers, ["gasto", "categor"]);
+  const iD = pickCol(headers, ["descrip"]);
+  const iI = pickCol(headers, ["importe", "monto"]);
+  const iM = pickCol(headers, ["medio"]);
+  if (iF < 0 || iI < 0) return null;
+  const rows = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const fecha = parseFecha(row[iF]);
+    const importe = parseImporte(row[iI]);
+    if (!fecha || !importe) continue;
+    rows.push({
+      ...fecha,
+      cat: (row[iC] || "Sin categoría").trim(),
+      desc: (row[iD] || "").trim(),
+      importe,
+      medio: (iM >= 0 ? row[iM] || "" : "").trim() || "—",
+    });
+  }
+  return rows.length ? rows : null;
+}
+
+function parseIngresosCsv(text) {
+  const { data } = Papa.parse(text.trim(), { skipEmptyLines: true });
+  if (!data.length) return null;
+  const headers = data[0].map(norm);
+  const iF = pickCol(headers, ["fecha"]);
+  const iC = pickCol(headers, ["ingreso", "categor"]);
+  const iD = pickCol(headers, ["descrip"]);
+  const iI = pickCol(headers, ["importe", "monto"]);
+  if (iF < 0 || iI < 0) return null;
+  const rows = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const fecha = parseFecha(row[iF]);
+    const importe = parseImporte(row[iI]);
+    if (!fecha || !importe) continue;
+    rows.push({ ...fecha, cat: (row[iC] || "").trim(), desc: (row[iD] || "").trim(), importe });
+  }
+  return rows.length ? rows : null;
+}
+
+async function fetchTab(tabNames, parser) {
+  for (const name of tabNames) {
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (text.trim().startsWith("<")) continue;
+      const parsed = parser(text);
+      if (parsed) return parsed;
+    } catch (e) { /* siguiente */ }
+  }
+  return null;
+}
+
+// ————— Formato —————
+const fmt = (v) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(v);
+const fmtM = (v) => (Math.abs(v) >= 1e6 ? `$${(v / 1e6).toFixed(1).replace(".", ",")} M` : fmt(v));
+const pct = (v) => `${Math.round(v * 100)}%`;
+
+// ————— Gráfico SVG —————
+function Evolucion({ serie, mes, onPick }) {
+  const W = 640, H = 180, PAD = 8, LBL = 20;
+  if (!serie.length) return null;
+  const maxV = Math.max(...serie.map((d) => Math.max(d.gasto, d.ingreso)), 1);
+  const n = serie.length;
+  const slot = (W - PAD * 2) / n;
+  const barW = Math.min(slot * 0.5, 44);
+  const y = (v) => H - LBL - (v / maxV) * (H - LBL - 14);
+  const cx = (i) => PAD + slot * i + slot / 2;
+
+  const pts = serie.map((d, i) => `${cx(i)},${y(d.ingreso)}`).join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      {serie.map((d, i) => (
+        <g key={d.m} style={{ cursor: "pointer" }} onClick={() => onPick(d.m)}>
+          <rect x={PAD + slot * i} y={0} width={slot} height={H} fill="transparent">
+            <title>{`${d.nombre} · Gastos ${fmtM(d.gasto)} · Ingresos ${fmtM(d.ingreso)}`}</title>
+          </rect>
+          <rect
+            x={cx(i) - barW / 2}
+            y={y(d.gasto)}
+            width={barW}
+            height={Math.max(H - LBL - y(d.gasto), 2)}
+            rx="4"
+            fill={mes === d.m ? INK : "#C9CCC2"}
+            style={{ transition: "fill .2s", pointerEvents: "none" }}
+          />
+          <text
+            x={cx(i)}
+            y={H - 4}
+            textAnchor="middle"
+            fontSize="11"
+            fill={mes === d.m ? INK : MUTED}
+            fontWeight={mes === d.m ? 600 : 400}
+            style={{ pointerEvents: "none" }}
+          >
+            {d.nombre}
+          </text>
+        </g>
+      ))}
+      <polyline points={pts} fill="none" stroke={GREEN} strokeWidth="1.5" style={{ pointerEvents: "none" }} />
+      {serie.map((d, i) => (
+        <circle key={"c" + d.m} cx={cx(i)} cy={y(d.ingreso)} r="2.5" fill={GREEN} style={{ pointerEvents: "none" }} />
+      ))}
+    </svg>
+  );
+}
+
+// ————— App —————
+function App() {
+  const [status, setStatus] = useState("loading");
+  const [gastos, setGastos] = useState([]);
+  const [ingresos, setIngresos] = useState([]);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [mes, setMes] = useState(null);
+  const [sinExtra, setSinExtra] = useState(false);
+  const [openCat, setOpenCat] = useState(null);
+  const [tab, setTab] = useState("resumen");
+
+  const cargar = useCallback(async () => {
+    setStatus("loading");
+    const [g, i] = await Promise.all([
+      fetchTab(GASTO_TABS, parseGastosCsv),
+      fetchTab(INGRESO_TABS, parseIngresosCsv),
+    ]);
+    if (!g) { setStatus("setup"); return; }
+    setGastos(g);
+    setIngresos(i || []);
+    setUpdatedAt(new Date());
+    const last = Math.max(...g.map((r) => r.m));
+    setMes((prev) => (prev === null || prev === undefined ? last : prev));
+    setStatus("ready");
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const mesesConDatos = useMemo(() => {
+    const set = new Set(gastos.map((r) => r.m));
+    ingresos.forEach((r) => set.add(r.m));
+    return [...set].sort((a, b) => a - b);
+  }, [gastos, ingresos]);
+
+  const esExtra = (r) => EXTRA_CATS.includes(norm(r.cat));
+
+  const gastosScope = useMemo(() => {
+    let rows = mes === null ? gastos : gastos.filter((r) => r.m === mes);
+    if (sinExtra) rows = rows.filter((r) => !esExtra(r));
+    return rows;
+  }, [gastos, mes, sinExtra]);
+
+  const extraExcluido = useMemo(() => {
+    const rows = mes === null ? gastos : gastos.filter((r) => r.m === mes);
+    return rows.filter(esExtra).reduce((a, r) => a + r.importe, 0);
+  }, [gastos, mes]);
+
+  const ingresosScope = useMemo(
+    () => (mes === null ? ingresos : ingresos.filter((r) => r.m === mes)),
+    [ingresos, mes]
+  );
+
+  const totalGasto = gastosScope.reduce((a, r) => a + r.importe, 0);
+  const totalIngreso = ingresosScope.reduce((a, r) => a + r.importe, 0);
+  const ahorro = totalIngreso - totalGasto;
+  const tasa = totalIngreso > 0 ? ahorro / totalIngreso : null;
+  const nMeses = mes === null ? Math.max(mesesConDatos.length, 1) : 1;
+
+  const serie = useMemo(() => {
+    return mesesConDatos.map((m) => {
+      let g = gastos.filter((r) => r.m === m);
+      if (sinExtra) g = g.filter((r) => !esExtra(r));
+      return {
+        m,
+        nombre: MESES[m],
+        gasto: g.reduce((a, r) => a + r.importe, 0),
+        ingreso: ingresos.filter((r) => r.m === m).reduce((a, r) => a + r.importe, 0),
+      };
+    });
+  }, [gastos, ingresos, mesesConDatos, sinExtra]);
+
+  const categorias = useMemo(() => {
+    const map = new Map();
+    gastosScope.forEach((r) => {
+      if (!map.has(r.cat)) map.set(r.cat, { cat: r.cat, total: 0, n: 0, rows: [] });
+      const o = map.get(r.cat);
+      o.total += r.importe; o.n += 1; o.rows.push(r);
+    });
+    return [...map.values()].sort((a, b) => b.total - a.total);
+  }, [gastosScope]);
+
+  const maxCat = categorias.length ? categorias[0].total : 1;
+
+  const detalleCat = useCallback((c) => {
+    const map = new Map();
+    c.rows.forEach((r) => {
+      const k = norm(r.desc) || "(sin descripción)";
+      if (!map.has(k)) map.set(k, { desc: r.desc || "(sin descripción)", total: 0, n: 0 });
+      const o = map.get(k);
+      o.total += r.importe; o.n += 1;
+    });
+    return [...map.values()].sort((a, b) => b.total - a.total).slice(0, 8);
+  }, []);
+
+  const medios = useMemo(() => {
+    const map = new Map();
+    gastosScope.forEach((r) => map.set(r.medio, (map.get(r.medio) || 0) + r.importe));
+    return [...map.entries()].map(([medio, total]) => ({ medio, total })).sort((a, b) => b.total - a.total);
+  }, [gastosScope]);
+
+  const recurrentes = useMemo(() => {
+    const map = new Map();
+    gastos.forEach((r) => {
+      const k = norm(r.desc);
+      if (!k) return;
+      if (!map.has(k)) map.set(k, { desc: r.desc, cat: r.cat, meses: new Set(), total: 0, n: 0 });
+      const o = map.get(k);
+      o.meses.add(r.m); o.total += r.importe; o.n += 1;
+    });
+    const nM = Math.max(mesesConDatos.length, 1);
+    return [...map.values()]
+      .filter((o) => o.meses.size >= 4)
+      .map((o) => ({ ...o, mesesN: o.meses.size, promMes: o.total / nM }))
+      .sort((a, b) => b.promMes - a.promMes);
+  }, [gastos, mesesConDatos]);
+
+  const totalRecurrente = recurrentes.reduce((a, r) => a + r.promMes, 0);
+
+  if (status === "loading") {
+    return (
+      <Shell>
+        <div className="flex items-center justify-center py-32" style={{ color: MUTED }}>
+          <span className="text-sm tracking-wide">Leyendo la planilla…</span>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (status === "setup") {
+    return (
+      <Shell>
+        <div className="max-w-md mx-auto py-16 px-6">
+          <p className="text-xs uppercase tracking-widest mb-3" style={{ color: MUTED }}>Un paso antes de empezar</p>
+          <h2 className="text-xl mb-4" style={{ color: INK, fontWeight: 600 }}>No se pudo leer la planilla</h2>
+          <p className="text-sm leading-relaxed mb-6" style={{ color: MUTED }}>
+            Verificá que la planilla tenga acceso de lectura por enlace. Nadie va a poder editarla:
+            solo quien tenga el link puede verla.
+          </p>
+          <ol className="text-sm leading-relaxed space-y-3 mb-8" style={{ color: INK }}>
+            <li>1 · Abrí <a href={SHEET_URL} target="_blank" rel="noreferrer" className="underline" style={{ color: GREEN }}>Finanzas Personales 2026</a></li>
+            <li>2 · Compartir → Acceso general → «Cualquier persona con el enlace» → Lector</li>
+            <li>3 · Volvé acá y tocá reintentar</li>
+          </ol>
+          <button onClick={cargar} className="px-5 py-2.5 text-sm rounded-full" style={{ background: INK, color: PAPER }}>
+            Reintentar
+          </button>
+        </div>
+      </Shell>
+    );
+  }
+
+  const titulo = mes === null ? "Año 2026" : `${MESES_FULL[mes]} 2026`;
+  const base = Math.max(totalIngreso, totalGasto, 1);
+  const gastoPctBar = totalGasto / base;
+  const ingresoPctBar = totalIngreso / base;
+
+  return (
+    <Shell>
+      <header className="flex flex-wrap items-baseline justify-between gap-3 mb-8">
+        <div>
+          <p className="text-xs uppercase tracking-widest" style={{ color: MUTED }}>Finanzas personales</p>
+          <h1 className="text-2xl mt-1" style={{ color: INK, fontWeight: 650, letterSpacing: "-0.01em" }}>{titulo}</h1>
+        </div>
+        <div className="flex items-center gap-3 text-xs" style={{ color: FAINT }}>
+          {updatedAt && <span>Actualizado {updatedAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}</span>}
+          <button onClick={cargar} className="px-3 py-1.5 rounded-full border" style={{ borderColor: LINE, color: MUTED, background: CARD }}>
+            Actualizar
+          </button>
+        </div>
+      </header>
+
+      <nav className="flex flex-wrap gap-1.5 mb-8">
+        <Chip active={mes === null} onClick={() => { setMes(null); setOpenCat(null); }}>Año</Chip>
+        {mesesConDatos.map((m) => (
+          <Chip key={m} active={mes === m} onClick={() => { setMes(m); setOpenCat(null); }}>{MESES[m]}</Chip>
+        ))}
+      </nav>
+
+      {/* La regla del mes */}
+      <section className="rounded-2xl p-6 mb-4" style={{ background: CARD, border: `1px solid ${LINE}` }}>
+        <div className="relative h-3 rounded-full overflow-hidden mb-1" style={{ background: PAPER }}>
+          <div className="absolute inset-y-0 left-0" style={{ width: `${Math.min(gastoPctBar, ingresoPctBar) * 100}%`, background: INK, transition: "width .5s" }} />
+          {ahorro >= 0 ? (
+            <div className="absolute inset-y-0" style={{ left: `${gastoPctBar * 100}%`, width: `${(ingresoPctBar - gastoPctBar) * 100}%`, background: GREEN, transition: "all .5s" }} />
+          ) : (
+            <div className="absolute inset-y-0" style={{ left: `${ingresoPctBar * 100}%`, width: `${(gastoPctBar - ingresoPctBar) * 100}%`, background: RED, transition: "all .5s" }} />
+          )}
+        </div>
+        <div className="flex justify-between text-xs mb-6" style={{ color: FAINT }}>
+          <span>gastado</span>
+          <span>{ahorro >= 0 ? "ahorro" : "excedido"}</span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-5">
+          <Kpi label="Ingresos" value={fmt(totalIngreso)} sub={mes === null ? `${fmtM(totalIngreso / nMeses)} por mes` : null} />
+          <Kpi label="Gastos" value={fmt(totalGasto)} sub={mes === null ? `${fmtM(totalGasto / nMeses)} por mes` : null} />
+          <Kpi label={ahorro >= 0 ? "Ahorro" : "Déficit"} value={fmt(Math.abs(ahorro))} color={ahorro >= 0 ? GREEN : RED} />
+          <Kpi label="Tasa de ahorro" value={tasa === null ? "—" : pct(tasa)} color={tasa === null ? MUTED : tasa >= 0.2 ? GREEN : tasa >= 0 ? AMBER : RED} />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 mt-6 pt-5" style={{ borderTop: `1px solid ${LINE}` }}>
+          <button
+            onClick={() => setSinExtra((v) => !v)}
+            className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-full border"
+            style={{ borderColor: sinExtra ? INK : LINE, background: sinExtra ? INK : "transparent", color: sinExtra ? PAPER : MUTED, transition: "all .2s" }}
+          >
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: sinExtra ? GREEN : FAINT }} />
+            Sin extraordinarios
+          </button>
+          <span className="text-xs" style={{ color: FAINT }}>
+            {sinExtra
+              ? `Excluye ${fmtM(extraExcluido)} en compras especiales y vacaciones`
+              : "Incluye compras especiales y vacaciones"}
+          </span>
+        </div>
+      </section>
+
+      {/* Evolución */}
+      <section className="rounded-2xl p-6 mb-4" style={{ background: CARD, border: `1px solid ${LINE}` }}>
+        <SectionTitle>Evolución mensual</SectionTitle>
+        <Evolucion serie={serie} mes={mes} onPick={(m) => { setMes(m); setOpenCat(null); }} />
+        <p className="text-xs mt-2" style={{ color: FAINT }}>
+          Barras: gastos · Línea: ingresos · Tocá una barra para ver ese mes
+        </p>
+      </section>
+
+      <div className="flex gap-1.5 mb-3">
+        <Chip active={tab === "resumen"} onClick={() => setTab("resumen")}>Por categoría</Chip>
+        <Chip active={tab === "fijos"} onClick={() => setTab("fijos")}>Fijos y recurrentes</Chip>
+      </div>
+
+      {tab === "resumen" && (
+        <section className="rounded-2xl p-6 mb-4" style={{ background: CARD, border: `1px solid ${LINE}` }}>
+          <SectionTitle>Gastos por categoría {mes === null ? "· año" : `· ${MESES[mes]}`}</SectionTitle>
+          <div>
+            {categorias.map((c) => {
+              const share = totalGasto > 0 ? c.total / totalGasto : 0;
+              const open = openCat === c.cat;
+              return (
+                <div key={c.cat} style={{ borderBottom: `1px solid ${LINE}` }}>
+                  <button onClick={() => setOpenCat(open ? null : c.cat)} className="w-full py-3 text-left">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-sm truncate" style={{ color: INK }}>{c.cat}</span>
+                      <span className="flex items-baseline gap-3 shrink-0">
+                        <span className="text-xs tabular-nums" style={{ color: FAINT }}>{pct(share)}</span>
+                        <span className="text-sm tabular-nums" style={{ color: INK, fontWeight: 550 }}>{fmt(c.total)}</span>
+                      </span>
+                    </div>
+                    <div className="mt-2 rounded-full" style={{ background: PAPER, height: "2px" }}>
+                      <div className="rounded-full" style={{ width: `${(c.total / maxCat) * 100}%`, background: INK, height: "2px", transition: "width .5s" }} />
+                    </div>
+                  </button>
+                  {open && (
+                    <div className="pb-4 pl-1">
+                      {detalleCat(c).map((d) => (
+                        <div key={d.desc} className="flex justify-between py-1 text-xs">
+                          <span style={{ color: MUTED }}>
+                            {d.desc}{d.n > 1 && <span style={{ color: FAINT }}> ×{d.n}</span>}
+                          </span>
+                          <span className="tabular-nums" style={{ color: MUTED }}>{fmt(d.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {medios.length > 0 && (
+            <div className="mt-6">
+              <SectionTitle>Medio de pago</SectionTitle>
+              <div className="flex h-2 rounded-full overflow-hidden mb-3" style={{ background: PAPER }}>
+                {medios.map((m, i) => (
+                  <div key={m.medio} style={{ width: `${(m.total / totalGasto) * 100}%`, background: [INK, GREEN, "#9AA595", "#C9CCC2", AMBER, RED][i % 6] }} />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {medios.map((m, i) => (
+                  <span key={m.medio} className="flex items-center gap-1.5 text-xs" style={{ color: MUTED }}>
+                    <span className="inline-block w-2 h-2 rounded-full" style={{ background: [INK, GREEN, "#9AA595", "#C9CCC2", AMBER, RED][i % 6] }} />
+                    {m.medio} · {pct(m.total / totalGasto)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "fijos" && (
+        <section className="rounded-2xl p-6 mb-4" style={{ background: CARD, border: `1px solid ${LINE}` }}>
+          <SectionTitle>Gastos presentes en 4 meses o más</SectionTitle>
+          <p className="text-xs mb-4 leading-relaxed" style={{ color: MUTED }}>
+            Tu "piso" mensual estimado es <span style={{ color: INK, fontWeight: 600 }}>{fmt(totalRecurrente)}</span>.
+            Es lo que se repite todos los meses antes de cualquier decisión: acá es donde un ajuste chico rinde todo el año.
+          </p>
+          <div>
+            {recurrentes.map((r) => (
+              <div key={norm(r.desc)} className="flex items-baseline justify-between gap-3 py-2.5" style={{ borderBottom: `1px solid ${LINE}` }}>
+                <div className="min-w-0">
+                  <span className="text-sm truncate block" style={{ color: INK }}>{r.desc}</span>
+                  <span className="text-xs" style={{ color: FAINT }}>{r.cat} · {r.mesesN} meses</span>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-sm tabular-nums block" style={{ color: INK, fontWeight: 550 }}>{fmt(r.promMes)}</span>
+                  <span className="text-xs" style={{ color: FAINT }}>por mes</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <footer className="text-xs pb-8 pt-2" style={{ color: FAINT }}>
+        Fuente: <a href={SHEET_URL} target="_blank" rel="noreferrer" className="underline">Finanzas Personales 2026</a> ·
+        Los datos se leen en vivo, seguí cargando en Sheets como siempre.
+      </footer>
+    </Shell>
+  );
+}
+
+function Shell({ children }) {
+  return (
+    <div className="min-h-screen" style={{ background: PAPER, color: INK, fontFamily: "'Archivo', ui-sans-serif, system-ui, sans-serif", fontVariantNumeric: "tabular-nums" }}>
+      <div className="max-w-2xl mx-auto px-4 pt-8">{children}</div>
+    </div>
+  );
+}
+
+function Chip({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-3 py-1.5 text-xs rounded-full border capitalize"
+      style={{ borderColor: active ? INK : LINE, background: active ? INK : CARD, color: active ? PAPER : MUTED, transition: "all .2s" }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Kpi({ label, value, sub, color }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-widest mb-1" style={{ color: FAINT }}>{label}</p>
+      <p className="text-lg leading-tight tabular-nums" style={{ color: color || INK, fontWeight: 650 }}>{value}</p>
+      {sub && <p className="text-xs mt-0.5 tabular-nums" style={{ color: FAINT }}>{sub}</p>}
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return <p className="text-xs uppercase tracking-widest mb-4" style={{ color: MUTED }}>{children}</p>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
